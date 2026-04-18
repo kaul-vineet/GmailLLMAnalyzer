@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Search Gmail by content keyword and generate a Claude-powered chronological analysis report."""
+"""Search Gmail by content keyword and generate an LLM-powered chronological analysis report.
+
+Supported providers (via LiteLLM):
+  anthropic   → model: "anthropic/claude-opus-4-7"   | env: ANTHROPIC_API_KEY
+  azure       → model: "azure/<deployment-name>"      | env: AZURE_API_KEY, AZURE_API_BASE, AZURE_API_VERSION
+  openai      → model: "openai/gpt-4o"               | env: OPENAI_API_KEY
+  gemini      → model: "gemini/gemini-1.5-pro"       | env: GEMINI_API_KEY
+  any other LiteLLM-supported provider works the same way.
+"""
 
 import os
 import sys
@@ -11,9 +19,23 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-import anthropic
+import litellm
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+DEFAULT_MODEL = "anthropic/claude-opus-4-7"
+
+SYSTEM_PROMPT = (
+    "You are an expert email analyst. You receive a set of emails related to a topic "
+    "and produce a clear, readable chronological history of what happened. "
+    "Your analysis must:\n"
+    "1. Start by reading the latest email to understand the current state\n"
+    "2. Trace back to the beginning to understand how things started\n"
+    "3. Present a CHRONOLOGICAL narrative (oldest to newest) of key events\n"
+    "4. Highlight: decisions made, people involved, action items, escalations, outcomes\n"
+    "5. End with a current status summary and any open items\n"
+    "Write in clear prose. Use short section headers. Be concise but complete."
+)
 
 
 def authenticate():
@@ -109,8 +131,8 @@ def fetch_emails(service, query, max_results):
     return sorted(emails, key=lambda e: e["date"])
 
 
-def format_emails_for_claude(emails):
-    """Format emails into a structured block for Claude — latest first for context, then chronological."""
+def format_emails_for_llm(emails):
+    """Format emails latest-first so the LLM reads current state before tracing history."""
     lines = []
     for i, e in enumerate(reversed(emails), 1):
         date_fmt = e["date"].strftime("%Y-%m-%d %H:%M") if e["date"] != datetime.min else "Unknown"
@@ -127,96 +149,58 @@ def format_emails_for_claude(emails):
     return "\n".join(lines)
 
 
-def analyse_with_claude(emails, query):
-    """Send emails to Claude and get a chronological narrative analysis."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("WARNING: ANTHROPIC_API_KEY not set — skipping AI analysis.")
+def analyse_with_llm(emails, query, model):
+    """Send emails to any LiteLLM-supported model and stream back a chronological analysis."""
+    email_block = format_emails_for_llm(emails)
+
+    user_content = (
+        f'Search query used: "{query}"\n'
+        f"Total emails found: {len(emails)}\n\n"
+        f"Here are the emails (shown latest-first so you can understand current state first):\n\n"
+        f"{email_block}"
+    )
+
+    print(f"Sending to {model} for analysis...")
+
+    try:
+        response = litellm.completion(
+            model=model,
+            max_tokens=4096,
+            stream=True,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_content},
+            ],
+        )
+    except Exception as e:
+        print(f"\nERROR calling LLM: {e}")
+        print("Check your API key env vars and model string.")
         return None
 
-    client = anthropic.Anthropic(api_key=api_key)
-
-    email_block = format_emails_for_claude(emails)
-
-    system_prompt = (
-        "You are an expert email analyst. You receive a set of emails related to a topic "
-        "and produce a clear, readable chronological history of what happened. "
-        "Your analysis must:\n"
-        "1. Start by reading the latest email to understand the current state\n"
-        "2. Trace back to the beginning to understand how things started\n"
-        "3. Present a CHRONOLOGICAL narrative (oldest to newest) of key events\n"
-        "4. Highlight: decisions made, people involved, action items, escalations, outcomes\n"
-        "5. End with a current status summary and any open items\n"
-        "Write in clear prose. Use short section headers. Be concise but complete."
-    )
-
-    print("Sending to Claude for analysis (this may take a moment)...")
-
-    with client.messages.stream(
-        model="claude-opus-4-7",
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Search query used: \"{query}\"\n"
-                            f"Total emails found: {len(emails)}\n\n"
-                            f"Here are the emails (shown latest-first so you can understand current state first):\n\n"
-                            f"{email_block}"
-                        ),
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            }
-        ],
-    ) as stream:
-        analysis = ""
-        for text in stream.text_stream:
-            print(text, end="", flush=True)
-            analysis += text
+    analysis = ""
+    for chunk in response:
+        delta = chunk.choices[0].delta.content or ""
+        print(delta, end="", flush=True)
+        analysis += delta
 
     print("\n")
-
-    final = stream.get_final_message()
-    usage = final.usage
-    print(
-        f"  Tokens — input: {usage.input_tokens} | "
-        f"cached: {usage.cache_read_input_tokens} | "
-        f"output: {usage.output_tokens}"
-    )
-
     return analysis
 
 
-def generate_report(emails, query, analysis, output_file):
+def generate_report(emails, query, model, analysis, output_file):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [
         "=" * 72,
         "  GMAIL EMAIL ANALYSIS REPORT",
         f"  Query     : {query}",
+        f"  Model     : {model}",
         f"  Generated : {now}",
         f"  Emails    : {len(emails)}",
         "=" * 72,
     ]
 
     if analysis:
-        lines += [
-            "",
-            "  CLAUDE AI ANALYSIS",
-            "  " + "─" * 68,
-            "",
-        ]
+        lines += ["", "  AI ANALYSIS", "  " + "─" * 68, ""]
         for line in analysis.splitlines():
             lines.append("  " + line)
         lines += ["", "=" * 72]
@@ -264,14 +248,23 @@ def generate_report(emails, query, analysis, output_file):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Search Gmail by content and produce a Claude-powered chronological analysis."
+        description="Search Gmail by content and produce an LLM-powered chronological analysis.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Model examples:
+  anthropic/claude-opus-4-7       (default) — needs ANTHROPIC_API_KEY
+  azure/gpt-4o                              — needs AZURE_API_KEY, AZURE_API_BASE, AZURE_API_VERSION
+  openai/gpt-4o                             — needs OPENAI_API_KEY
+  gemini/gemini-1.5-pro                     — needs GEMINI_API_KEY
+        """,
     )
-    parser.add_argument("query", help='Search term, e.g. "budget approval" or "from:boss@acme.com invoice"')
+    parser.add_argument("query", help='Search term, e.g. "budget approval"')
     parser.add_argument("--max", type=int, default=100, help="Max emails to fetch (default 100)")
-    parser.add_argument("--after", help="Emails after date YYYY/MM/DD")
+    parser.add_argument("--after",  help="Emails after date  YYYY/MM/DD")
     parser.add_argument("--before", help="Emails before date YYYY/MM/DD")
-    parser.add_argument("--output", "-o", help="Output filename (default: report_<query>.txt)")
-    parser.add_argument("--no-ai", action="store_true", help="Skip Claude analysis, raw report only")
+    parser.add_argument("--output", "-o", help="Output filename")
+    parser.add_argument("--model",  "-m", default=DEFAULT_MODEL, help=f"LLM model string (default: {DEFAULT_MODEL})")
+    parser.add_argument("--no-ai",  action="store_true", help="Skip AI analysis, raw report only")
     args = parser.parse_args()
 
     query = args.query
@@ -291,10 +284,10 @@ def main():
 
     analysis = None
     if not args.no_ai:
-        analysis = analyse_with_claude(emails, query)
+        analysis = analyse_with_llm(emails, query, args.model)
 
-    print(f"Generating report for {len(emails)} emails...")
-    path = generate_report(emails, query, analysis, output)
+    print(f"Generating report...")
+    path = generate_report(emails, query, args.model, analysis, output)
     print(f"Report saved → {path}")
 
 
