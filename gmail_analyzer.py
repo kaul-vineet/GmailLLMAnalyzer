@@ -165,6 +165,8 @@ def analyse_with_llm(emails, query, model):
     try:
         response = litellm.completion(
             model=model,
+            api_key=os.environ.get("AZURE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY"),
+            api_base=os.environ.get("AZURE_API_BASE"),
             max_tokens=4096,
             stream=True,
             messages=[

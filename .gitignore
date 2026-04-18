@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 *.pyo
 report_*.txt
+run.bat
+debug_llm.py
