@@ -15,13 +15,18 @@ import base64
 import argparse
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 import litellm
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+]
 
 DEFAULT_MODEL = "anthropic/claude-opus-4-7"
 
@@ -301,6 +306,26 @@ def generate_report(emails, query, model, analysis, output_file):
     return output_file
 
 
+def save_markdown(analysis, query, model, output_file):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    md = f"# Email Analysis: {query}\n\n"
+    md += f"**Generated:** {now}  \n**Model:** {model}\n\n---\n\n"
+    md += analysis
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(md)
+    return output_file
+
+
+def send_email(service, to_address, subject, body_md):
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = to_address
+    msg.attach(MIMEText(body_md, "plain", "utf-8"))
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    print(f"Email sent to {to_address}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Search Gmail by content and produce an LLM-powered chronological analysis.",
@@ -320,6 +345,7 @@ Model examples:
     parser.add_argument("--output", "-o", help="Output filename")
     parser.add_argument("--model",  "-m", default=DEFAULT_MODEL, help=f"LLM model string (default: {DEFAULT_MODEL})")
     parser.add_argument("--no-ai",  action="store_true", help="Skip AI analysis, raw report only")
+    parser.add_argument("--email",  help="Send analysis to this email address after generating")
     args = parser.parse_args()
 
     query = args.query
@@ -328,7 +354,9 @@ Model examples:
     if args.before:
         query += f" before:{args.before}"
 
-    output = args.output or "report_" + args.query[:40].replace(" ", "_").replace("/", "-") + ".txt"
+    slug = args.query[:40].replace(" ", "_").replace("/", "-")
+    output = args.output or f"report_{slug}.txt"
+    md_output = f"report_{slug}.md"
 
     service = authenticate()
     emails = fetch_emails(service, query, args.max)
@@ -344,6 +372,14 @@ Model examples:
     print(f"Generating report...")
     path = generate_report(emails, query, args.model, analysis, output)
     print(f"Report saved → {path}")
+
+    if analysis:
+        md_path = save_markdown(analysis, query, args.model, md_output)
+        print(f"Markdown saved → {md_path}")
+
+    if args.email and analysis:
+        subject = f"PF Email Analysis: {args.query}"
+        send_email(service, args.email, subject, analysis)
 
 
 if __name__ == "__main__":
