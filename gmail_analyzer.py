@@ -37,11 +37,11 @@ SYSTEM_PROMPT = (
 
     "Structure your output EXACTLY as follows:\n\n"
 
-    "## Quick Reference Table\n"
-    "A markdown table with columns: Field | Value\n"
-    "Rows must cover: Member Name, UAN(s), all PF Account Numbers (one per row), "
-    "Employers (with tenure dates), EPFO Offices, Grievance IDs, "
-    "Transfer Status, Pre-2014 Review Status, Blocking Reason, Last Action, Next Required Action.\n\n"
+    "## PF Account Summary Table\n"
+    "A markdown table with EXACTLY these columns: UAN | Company | PF No | Transfer (Y/N) | Issue | Years of Service\n"
+    "One row per employer / PF account. Populate every cell from the emails. "
+    "For 'Transfer (Y/N)' use Y if transferred successfully, N if blocked, Partial if partially done. "
+    "For 'Issue' briefly state the blocking reason or 'None' if clean.\n\n"
 
     "## Chronological Summary of Events (2010 – present)\n"
     "Numbered sub-sections, one per employment period or major phase, with date range in the heading. "
@@ -50,12 +50,6 @@ SYSTEM_PROMPT = (
     "- Describe contributions, transfers attempted, outcomes\n"
     "- Quote exact amounts, dates, reference numbers from the emails\n"
     "- Note every grievance filed, every EPFO response, every form submitted\n\n"
-
-    "## Key Stakeholders\n"
-    "Bullet list: Name — Role — What they did / owe\n\n"
-
-    "## Decisions and Actions Taken\n"
-    "Bullet list of concrete decisions/actions with dates and who took them.\n\n"
 
     "## Pre-2014 Service Review — PRIMARY ISSUE\n"
     "This is the main blocking problem. Cover in detail:\n"
